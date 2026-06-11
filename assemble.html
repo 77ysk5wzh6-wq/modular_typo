@@ -79,7 +79,7 @@
   #resizeHandle svg{display:block}
   #panel.collapsed #resizeHandle{display:none}
   /* 좌상단 about 버튼 (팝업과 동일 톤) */
-  #aboutBtn{position:fixed;top:18px;left:20px;z-index:8;
+  #aboutBtn, #exportBtn{position:fixed;z-index:8;
     border:none;font-family:inherit;cursor:pointer;
     text-decoration:none;color:#1f2328;font-size:12px;letter-spacing:.12em;
     text-transform:uppercase;padding:7px 12px;border-radius:10px;
@@ -87,10 +87,12 @@
     backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
     box-shadow:0 6px 24px rgba(20,24,30,.18);
     transition:transform .12s,box-shadow .12s}
-  #aboutBtn:hover{transform:translateY(-1px);box-shadow:0 8px 28px rgba(20,24,30,.24)}
+  #aboutBtn{top:18px;left:20px}
+  #exportBtn{top:18px;right:20px}                         /* 우측 상단 */
+  #aboutBtn:hover, #exportBtn:hover{transform:translateY(-1px);box-shadow:0 8px 28px rgba(20,24,30,.24)}
   /* ── about 전체화면 오버레이 ── */
   /* about 열렸을 때: 뒤 메인 페이지 요소들은 스크롤/클릭 막아 오버레이 스크롤만 동작 */
-  body.about-open #word, body.about-open .pop, body.about-open #aboutBtn{
+  body.about-open #word, body.about-open .pop, body.about-open #aboutBtn, body.about-open #exportBtn{
     pointer-events:none}
   #aboutOverlay{position:fixed;inset:0;z-index:20;
     background:rgba(245,246,248,.6);
@@ -117,6 +119,7 @@
 </head>
 <body>
 <button id="aboutBtn" type="button">about</button>
+<button id="exportBtn" type="button">export svg</button>
 <div id="aboutOverlay" aria-hidden="true">
   <button class="close" type="button" title="닫기" aria-label="닫기">×</button>
   <div class="ahead">
@@ -584,6 +587,101 @@ function download(){
   a.href=URL.createObjectURL(blob); a.download="modular_typo.svg"; a.click();
 }
 
+// paper.js 지연 로드(merge 내보내기 첫 사용 시 1회)
+let _paperPromise=null;
+function loadPaper(){
+  if(window.paper && paper.Path) return Promise.resolve(window.paper);
+  if(_paperPromise) return _paperPromise;
+  _paperPromise=new Promise((res,rej)=>{
+    const s=document.createElement("script");
+    s.src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-core.min.js";
+    s.onload=()=>res(window.paper); s.onerror=()=>rej(new Error("paper.js 로드 실패"));
+    document.head.appendChild(s);
+  });
+  return _paperPromise;
+}
+
+// 글자별로 획을 boolean union 하여 하나의 윤곽(path)으로 합쳐 내보내기.
+async function downloadMerged(){
+  const lines=[...document.querySelectorAll("#word .line")];
+  if(!lines.length) return;
+  let paper;
+  try{ paper = await loadPaper(); }
+  catch(e){ alert("merge 내보내기는 인터넷 연결이 필요합니다(paper.js).\n"+e.message); return; }
+
+  // 오프스크린 캔버스에 paper 프로젝트 1개 셋업
+  const canvas=document.createElement("canvas");
+  paper.setup(canvas);
+  const proj=paper.project;
+  proj.clear();
+
+  let X0=Infinity,Y0=Infinity,X1=-Infinity,Y1=-Infinity;
+  const letterPaths=[];
+
+  for(const line of lines){
+    const lx=parseFloat(line.style.left)||0, ly=parseFloat(line.style.top)||0;
+    for(const g of line.querySelectorAll(".glyph")){
+      const svg=g.querySelector("svg");
+      const left=lx+(parseFloat(g.style.left)||0), top=ly+(parseFloat(g.style.top)||0);
+      const w=+svg.getAttribute("width"), h=+svg.getAttribute("height");
+      const vbn=svg.getAttribute("viewBox").split(/\s+/).map(Number);
+      const sx=w/vbn[2], sy=h/vbn[3];
+
+      // 컬러 코어 블럭(획의 색 등록 마커: fill="#…" 가 지정된 polygon 등) 제거 후 본체 획만 남김.
+      // 검정 본체 획은 fill 속성이 없음 → fill에 색(#…)이 명시된 요소만 골라 삭제.
+      const tmp=svg.cloneNode(true);
+      tmp.querySelectorAll('[fill]').forEach(el=>{
+        const fv=(el.getAttribute("fill")||"").trim().toLowerCase();
+        if(fv && fv!=="none" && fv!=="currentcolor") el.remove();   // 색 지정 코어블럭 제거
+      });
+      // 이 글리프를 화면 절대좌표로 배치한 임시 SVG 문자열
+      const one=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbn.join(" ")}">${tmp.innerHTML}</svg>`;
+      const layer=new paper.Layer();
+      const imported=proj.importSVG(one,{expandShapes:true,insert:true});
+      // 화면과 동일 변환: viewBox 원점 보정 → 스케일 → 위치 이동
+      imported.translate(new paper.Point(-vbn[0],-vbn[1]));
+      imported.scale(sx,sy,new paper.Point(0,0));
+      imported.translate(new paper.Point(left,top));
+
+      // 채워지는 도형만 수집(외곽선 전용 fill=none 제외).
+      // 중요: CompoundPath의 자식(구멍 등)을 따로 수집하면 안 됨 → 최상위 도형만.
+      // (자식까지 모으면 구멍이 독립 도형으로 분리돼 winding이 깨지고 구멍이 메워짐)
+      const fills=[];
+      const collect=(it)=>{
+        if(it.className==="CompoundPath" || it.className==="Path"){
+          const f=it.fillColor, hasFill = f && f.alpha>0;
+          const noneAttr = it.data && it.data.fill==="none";
+          if(hasFill && !noneAttr && it.bounds.width>0.01 && it.bounds.height>0.01) fills.push(it);
+        } else if(it.children){            // Group/Layer 등은 자식으로 내려감
+          it.children.forEach(collect);
+        }
+      };
+      collect(imported);
+      if(fills.length){
+        // 최상위 도형만 모았으므로 각 획/구멍 구조가 원본 그대로 유지됨.
+        // 겹친 획은 nonzero winding으로 합쳐 보이고, 닫힌 구멍(O 안쪽 등)은 보존.
+        let merged=fills[0].clone();
+        for(let i=1;i<fills.length;i++){
+          const u=merged.unite(fills[i],{insert:false});
+          merged.remove(); merged=u;
+        }
+        merged.fillColor="#000"; merged.strokeColor=null;
+        const b=merged.bounds;
+        X0=Math.min(X0,b.x); Y0=Math.min(Y0,b.y); X1=Math.max(X1,b.x+b.width); Y1=Math.max(Y1,b.y+b.height);
+        letterPaths.push(merged.pathData);
+      }
+      layer.remove();   // 임시 import 정리(pathData는 이미 문자열로 보관)
+    }
+  }
+  if(!letterPaths.length) return;
+  const pad=10, W=(X1-X0)+pad*2, H=(Y1-Y0)+pad*2;
+  const body=letterPaths.map(d=>`<path d="${d}" fill="#000" fill-rule="nonzero"/>`).join("");
+  const out=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="${X0-pad} ${Y0-pad} ${W} ${H}">${body}</svg>`;
+  const blob=new Blob([out],{type:"image/svg+xml"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download="modular_typo_merged.svg"; a.click();
+}
+
 // 감정/컬러 스위치 UI(팝업 .body 안에). 영어 라벨.
 function buildEmos(){
   const el=document.querySelector("#emos .body"); el.innerHTML="";
@@ -684,7 +782,9 @@ addEventListener("wheel", e=>{
 addEventListener("resize", render);
 // 글자 영역 클릭 → 획 다시 랜덤 조립
 document.getElementById("word").addEventListener("click", ()=>{ shuffleAll(); render(); });
-// 단축키: Cmd/Ctrl+S → SVG 저장, Esc → 재조립
+// 글자별 윤곽 통합 SVG 내보내기 버튼
+document.getElementById("exportBtn").addEventListener("click", downloadMerged);
+// 단축키: Cmd/Ctrl+S → 획 분리 SVG 저장, Esc → 재조립
 addEventListener("keydown", e=>{
   if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="s"){ e.preventDefault(); download(); }
   if(e.key==="Escape"){
