@@ -699,6 +699,18 @@ function openAbout(){ aboutOverlay.classList.add("open"); aboutOverlay.setAttrib
 function closeAbout(){ aboutOverlay.classList.remove("open"); aboutOverlay.setAttribute("aria-hidden","true"); document.body.classList.remove("about-open"); }
 
 aboutBtn.addEventListener("click", openAbout);
+
+window.addEventListener("load", async ()=>{
+  document.getElementById("txt").value="A";
+  render();
+  await new Promise(r=>setTimeout(r,200));
+  const g=document.querySelector("#word .glyph svg");
+  // 내부 요소 종류·개수·fill 요약
+  const els=[...g.querySelectorAll("*")];
+  const summary=els.map(e=>e.tagName+(e.getAttribute("fill")?("[fill="+e.getAttribute("fill")+"]"):"")).slice(0,40);
+  document.title="GLYPH|"+g.getAttribute("viewBox")+"|"+JSON.stringify(summary);
+});
+
 aboutOverlay.querySelector(".close").addEventListener("click", closeAbout);
 aboutOverlay.addEventListener("click", e=>{ if(e.target===aboutOverlay) closeAbout(); });  // 바깥(배경) 클릭 시 닫기
 </script>
